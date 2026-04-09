@@ -4,7 +4,7 @@
 
 A tiny menu-bar app that turns every Claude Code completion into a 4-second anime power-up. Impossible to miss. Annoying to your coworkers. Joyful to you.
 
-![Goku](assets/goku_base.png)
+<img src="assets/goku_sheet.png" alt="Goku sprite sheet" width="320" />
 
 ## Install
 
