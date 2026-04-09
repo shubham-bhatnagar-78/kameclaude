@@ -38,8 +38,10 @@
     "LICENSE"
   ],
   "scripts": {
-    "start": "electron .",
-    "dev": "electron ."
+    "start": "node bin/kameclaude.js",
+    "dev": "electron .",
+    "install-hook": "node bin/kameclaude.js install",
+    "uninstall-hook": "node bin/kameclaude.js uninstall"
   },
   "dependencies": {
     "electron": "^33.0.0"

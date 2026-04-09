@@ -9,11 +9,13 @@ A tiny menu-bar app that turns every Claude Code completion into a 4-second anim
 ## Install
 
 ```bash
-npm install -g kameclaude
-kameclaude
+git clone https://github.com/shubham-bhatnagar-78/kameclaude
+cd kameclaude
+npm install
+npm start
 ```
 
-That's it. On first run, KameClaude:
+That's it. On first `npm start`, KameClaude:
 1. Generates an auth token at `~/.kameclaude/token` (so only you can trigger Goku).
 2. Installs a token-authed **Stop hook** into `~/.claude/settings.json` (a timestamped backup is saved next to it).
 3. Launches the menu-bar app.
@@ -23,11 +25,10 @@ Every time Claude Code finishes, Goku materializes on your screen, charges a kam
 ## Commands
 
 ```bash
-kameclaude                 # launch app (installs hook on first run)
-kameclaude install         # install the Claude Code Stop hook only
-kameclaude uninstall       # remove the Claude Code Stop hook
-kameclaude --no-install    # launch without touching settings.json
-kameclaude --help          # show help
+npm start                      # launch app (installs hook on first run)
+npm run install-hook           # install the Claude Code Stop hook only
+npm run uninstall-hook         # remove the Claude Code Stop hook
+node bin/kameclaude.js --help  # show all CLI options
 ```
 
 ## How it works
@@ -72,15 +73,6 @@ Left-click the menu bar icon to summon Goku. Right-click for **Quit**. No other 
 - **macOS**: first-class. First launch may prompt for Accessibility permission.
 - **Windows**: works via Electron. Native refocus needs the optional `koffi` dep (auto-installed when available).
 - **Linux**: works on X11. Wayland + GNOME tray support is flaky (known Electron issue).
-
-## Develop
-
-```bash
-git clone https://github.com/shubham-bhatnagar-78/kameclaude
-cd kameclaude
-npm install
-npm start
-```
 
 ## Disclaimer
 
