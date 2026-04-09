@@ -1,0 +1,49 @@
+{
+  "name": "kameclaude",
+  "version": "1.0.3",
+  "description": "Goku tells you when Claude Code is done.",
+  "license": "MIT",
+  "main": "main.js",
+  "bin": {
+    "kameclaude": "bin/kameclaude.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "electron",
+    "tray",
+    "overlay",
+    "claude",
+    "claude-code",
+    "notification"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/GitFrog1111/badclaude.git"
+  },
+  "bugs": {
+    "url": "https://github.com/GitFrog1111/badclaude/issues"
+  },
+  "homepage": "https://github.com/GitFrog1111/badclaude#readme",
+  "files": [
+    "main.js",
+    "preload.js",
+    "overlay.html",
+    "assets",
+    "sounds",
+    "icon",
+    "bin/kameclaude.js",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  },
+  "optionalDependencies": {
+    "koffi": "^2.9.0"
+  }
+}

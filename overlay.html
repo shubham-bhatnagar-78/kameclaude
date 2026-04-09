@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  * { margin: 0; padding: 0; }
+  html, body { overflow: hidden; background: transparent; width: 100%; height: 100%; cursor: crosshair; font-family: -apple-system, system-ui, sans-serif; }
+  canvas { display: block; image-rendering: pixelated; image-rendering: -moz-crisp-edges; image-rendering: crisp-edges; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ══════════════════════════════════════════════════════════════════════════════
+//  GOKU CHARGE-UP — hold to charge, release to blast
+// ══════════════════════════════════════════════════════════════════════════════
+const P = {
+  chargeMs:        700,    // hold time for full charge
+  ssjAt:           0.70,   // charge fraction where sprite swaps to SSJ
+  spriteScale:     0.32,   // fixed sprite scale (no growth on charge)
+  auraRings:       5,
+  auraRingSpacing: 70,
+  shakeAt:         0.3,    // charge fraction where shake starts
+  shakeMax:        14,
+  bgAlpha:         0,
+  blastHoldMs:     4200,   // how long to show speech bubble before hiding
+};
+
+const QUOTES = [
+  "POWER UP MY SON!",
+  "GO BEYOND! PLUS ULTRA!",
+  "KAAAMEEEHAAAMEEEHAAA!",
+  "THIS ISN'T EVEN MY FINAL FORM!",
+  "NEVER GIVE UP!",
+  "UNLEASH YOUR POWER!",
+  "GO BEYOND YOUR LIMITS!",
+  "YOU ARE THE HOPE OF THE UNIVERSE!",
+  "TRAIN HARDER!",
+  "FEEL THE KI!",
+  "UNIVERSE LOVES YOU, GIRL!",
+  "IT'S OVER 9000!",
+];
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let W, H;
+function resize() { W = canvas.width = window.innerWidth; H = canvas.height = window.innerHeight; }
+resize();
+window.addEventListener('resize', resize);
+
+// ── Sprites ─────────────────────────────────────────────────────────────────
+// Sprite sheet: three-frame Goku kamehameha sequence
+//   frame 0 = idle   (arms at sides)
+//   frame 1 = charge (hands cupped at hip)
+//   frame 2 = fire   (arms thrust forward)
+// Background is pale yellow (with an orange/brown border on the sheet).
+// We detect each frame by finding non-background pixel clusters, crop tight,
+// and key out the yellow so the frame composites cleanly on anything.
+const sheetRaw = new Image();
+let gokuFrames    = [null, null, null]; // base form
+let gokuSsjFrames = [null, null, null]; // super saiyan (hair recolored yellow)
+
+function isBackground(r, g, b, a) {
+  // Transparent PNG bg → alpha 0 means background.
+  if (a !== undefined && a < 16) return true;
+  // Or near-white pixels (some sheets are PNG-on-white).
+  return r > 235 && g > 235 && b > 235;
+}
+
+function buildFramesFromSheet(img) {
+  const c = document.createElement('canvas');
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const cx = c.getContext('2d');
+  cx.drawImage(img, 0, 0);
+  const data = cx.getImageData(0, 0, c.width, c.height);
+  const px = data.data;
+  const W = c.width, H = c.height;
+
+  // White-bg sheet: scan the full image.
+  const yx0 = 0, yx1 = W - 1, yy0 = 0, yy1 = H - 1;
+  const colHits = new Int32Array(W);
+  for (let y = yy0; y <= yy1; y++) {
+    for (let x = yx0; x <= yx1; x++) {
+      const i = (y * W + x) * 4;
+      if (!isBackground(px[i], px[i+1], px[i+2], px[i+3])) colHits[x]++;
+    }
+  }
+
+  // Find three column runs of "hits > threshold" separated by gaps.
+  const thr = 4;
+  const runs = [];
+  let start = -1;
+  for (let x = 0; x < W; x++) {
+    if (colHits[x] > thr) {
+      if (start === -1) start = x;
+    } else if (start !== -1) {
+      if (x - start > 15) runs.push([start, x - 1]);
+      start = -1;
+    }
+  }
+  if (start !== -1 && W - start > 15) runs.push([start, W - 1]);
+  // Keep the three widest runs (in case of stray specks).
+  runs.sort((a, b) => (b[1]-b[0]) - (a[1]-a[0]));
+  const top3 = runs.slice(0, 3).sort((a, b) => a[0] - b[0]);
+  if (top3.length !== 3) {
+    console.error('Sprite sheet: expected 3 frames, found', top3.length);
+    return;
+  }
+
+  // For each frame's column range, find vertical bbox and crop with yellow
+  // keyed out.
+  for (let f = 0; f < 3; f++) {
+    const [x0, x1] = top3[f];
+    let minY = H, maxY = -1;
+    for (let y = yy0; y <= yy1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = (y * W + x) * 4;
+        if (!isBackground(px[i], px[i+1], px[i+2], px[i+3])) {
+          if (y < minY) minY = y;
+          if (y > maxY) maxY = y;
+          break;
+        }
+      }
+    }
+    if (maxY < 0) continue;
+    const pad = 4;
+    const y0 = Math.max(0, minY - pad);
+    const y1 = Math.min(H - 1, maxY + pad);
+    const cw = x1 - x0 + 1;
+    const ch = y1 - y0 + 1;
+    // Pass 1: build a "is-white-pixel" grid for the crop.
+    const white = new Uint8Array(cw * ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const si = ((y + y0) * W + (x + x0)) * 4;
+        white[y * cw + x] = isBackground(px[si], px[si+1], px[si+2], px[si+3]) ? 1 : 0;
+      }
+    }
+    // Pass 2: flood fill white pixels from the border. Only *externally*
+    // connected white is background. Enclosed white (eye whites!) stays.
+    const bg = new Uint8Array(cw * ch);
+    const stack = [];
+    const push = (x, y) => {
+      if (x < 0 || y < 0 || x >= cw || y >= ch) return;
+      const k = y * cw + x;
+      if (bg[k] || !white[k]) return;
+      bg[k] = 1;
+      stack.push(k);
+    };
+    for (let x = 0; x < cw; x++) { push(x, 0); push(x, ch - 1); }
+    for (let y = 0; y < ch; y++) { push(0, y); push(cw - 1, y); }
+    while (stack.length) {
+      const k = stack.pop();
+      const x = k % cw, y = (k - x) / cw;
+      push(x + 1, y); push(x - 1, y);
+      push(x, y + 1); push(x, y - 1);
+    }
+    // PNG sheet — every interior pixel is real art, keep it verbatim.
+    // Mask: pixel is kept if NOT externally-connected-white.
+    const mask = new Uint8Array(cw * ch);
+    for (let k = 0; k < mask.length; k++) mask[k] = bg[k] ? 0 : 1;
+
+    // No erosion needed — PNG has crisp pixel edges.
+    const eroded = mask;
+
+    // Pass 3: emit pixels, nearest-neighbor, no anti-alias.
+    const fc = document.createElement('canvas');
+    fc.width = cw;
+    fc.height = ch;
+    const fx = fc.getContext('2d');
+    const fd = fx.createImageData(cw, ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const si = ((y + y0) * W + (x + x0)) * 4;
+        const di = (y * cw + x) * 4;
+        const k = y * cw + x;
+        if (!eroded[k]) {
+          fd.data[di] = fd.data[di+1] = fd.data[di+2] = fd.data[di+3] = 0;
+        } else {
+          fd.data[di]     = px[si];
+          fd.data[di + 1] = px[si + 1];
+          fd.data[di + 2] = px[si + 2];
+          fd.data[di + 3] = 255;
+        }
+      }
+    }
+    fx.putImageData(fd, 0, 0);
+    fc.naturalWidth = cw;
+    fc.naturalHeight = ch;
+    gokuFrames[f] = fc;
+
+    // Build a Super Saiyan variant by recoloring the hair (the darkest
+    // pixels) to bright gold, and tinting mid-dark outlines a warmer yellow.
+    const sc = document.createElement('canvas');
+    sc.width = cw; sc.height = ch;
+    const sxc = sc.getContext('2d');
+    const sd = sxc.createImageData(cw, ch);
+    for (let y = 0; y < ch; y++) {
+      for (let x = 0; x < cw; x++) {
+        const di = (y * cw + x) * 4;
+        const a = fd.data[di + 3];
+        if (!a) continue;
+        let r = fd.data[di], g = fd.data[di + 1], b = fd.data[di + 2];
+        const lum = 0.299*r + 0.587*g + 0.114*b;
+        if (lum < 60) {
+          // Pure black hair → SSJ gold
+          r = 255; g = 220; b = 40;
+        } else if (lum < 100 && b < 80 && r < 120) {
+          // Dark hair shading → darker gold
+          r = 220; g = 165; b = 20;
+        }
+        sd.data[di]     = r;
+        sd.data[di + 1] = g;
+        sd.data[di + 2] = b;
+        sd.data[di + 3] = a;
+      }
+    }
+    sxc.putImageData(sd, 0, 0);
+    sc.naturalWidth = cw;
+    sc.naturalHeight = ch;
+    gokuSsjFrames[f] = sc;
+  }
+}
+
+sheetRaw.onload = () => {
+  console.log('[sheet] loaded', sheetRaw.naturalWidth, 'x', sheetRaw.naturalHeight);
+  buildFramesFromSheet(sheetRaw);
+  console.log('[sheet] frames built:',
+    gokuFrames.map(f => f ? `${f.naturalWidth}x${f.naturalHeight}` : 'null').join(', '));
+};
+sheetRaw.onerror = e => console.error('[sheet] failed to load', e);
+sheetRaw.src = 'assets/goku_sheet.png';
+
+
+// Compatibility shim so existing code paths that refer to spriteBase still
+// work (used for size calculations).
+Object.defineProperty(window, 'spriteBase', {
+  get() { return gokuFrames[0]; }
+});
+Object.defineProperty(window, 'spriteSSJ', {
+  get() { return gokuFrames[0]; } // no SSJ sheet — skip crossfade
+});
+
+// ── State ───────────────────────────────────────────────────────────────────
+let active = false;       // overlay visible / scene running
+let charging = false;     // mouse held
+let chargeStart = 0;
+let charge = 0;           // 0..1
+let blasting = false;     // release fired, showing bubble
+let blastStart = 0;
+let blastQuote = '';
+let anchorX = 0, anchorY = 0;   // smoothed sprite position
+let targetX = 0, targetY = 0;   // raw cursor target
+let flying = false;             // post-click fly-out (unused now)
+let flyEnding = false;
+let flyVX = 0, flyVY = 0;
+let vanishing = false;
+let vanishStart = 0;
+const VANISH_MS = 260;
+let particles = [];
+let rings = [];           // aura rings {r, age}
+let ssjBlend = 0;         // 0..1 smooth crossfade to Super Saiyan sprite
+let frameAlpha = [1, 0, 0]; // smooth crossfade between idle / charge / fire
+let autoMode = false;     // true during /blast — disables cursor chase
+let beam = null;          // active kamehameha {start, dir, life, charge, ssj}
+let gokuClicks = 0;       // click-on-goku counter; two clicks → fly away
+let lastGokuClickTime = 0;
+let ringTimer = 0;
+let chargeSound = null;
+let blastSound = null;
+
+const CHARGE_SOUND_SRC = 'sounds/B.mp3';
+const BLAST_SOUND_SRC  = 'sounds/kamehameha.mp3';
+const VANISH_SOUND_SRC = 'sounds/instant_transmission.mp3';
+
+function playSound(src, loop=false, vol=0.7) {
+  try {
+    const a = new Audio(src);
+    a.loop = loop;
+    a.volume = vol;
+    a.play().catch(()=>{});
+    return a;
+  } catch(e) { return null; }
+}
+
+// ── Input ───────────────────────────────────────────────────────────────────
+document.addEventListener('mousemove', e => {
+  targetX = e.clientX;
+  targetY = e.clientY;
+});
+function hitGoku(x, y) {
+  // Generous hitbox so double-clicking is forgiving across any pose.
+  const h = spriteH();
+  const w = h * 0.95;
+  return x > anchorX - w/2 && x < anchorX + w/2 &&
+         y > anchorY - h * 1.05 && y < anchorY + h * 0.05;
+}
+
+// Deferred single-click. We hold pending fires for ~250ms so a fast
+// second click on Goku can cancel into a vanish before the beam starts.
+const DOUBLE_CLICK_MS = 280;
+let mouseDownAt = 0;
+let pendingFireTimer = null;
+let holdAudio = null; // kamehameha audio playing while button is held
+
+function cancelPendingFire() {
+  if (pendingFireTimer !== null) {
+    clearTimeout(pendingFireTimer);
+    pendingFireTimer = null;
+  }
+}
+function stopHoldAudio() {
+  if (holdAudio) {
+    try { holdAudio.pause(); holdAudio.currentTime = 0; } catch(e) {}
+    holdAudio = null;
+  }
+}
+
+document.addEventListener('mousedown', e => {
+  if (!active || flying || vanishing) return;
+  targetX = e.clientX;
+  targetY = e.clientY;
+  mouseDownAt = performance.now();
+  // Double-click on Goku → instant transmission. Cancels any pending
+  // single-click beam from the first click.
+  if (hitGoku(e.clientX, e.clientY)) {
+    const now = performance.now();
+    if (now - lastGokuClickTime > DOUBLE_CLICK_MS + 100) gokuClicks = 0;
+    gokuClicks++;
+    lastGokuClickTime = now;
+    if (gokuClicks >= 2) {
+      cancelPendingFire();
+      instantTransmission();
+      return;
+    }
+  }
+  if (blasting) return;
+  // Start powering up only — no fire yet. Release decides what happens.
+  charging = true;
+  chargeStart = performance.now() - charge * P.chargeMs;
+  // Start the kamehameha vocal immediately so the "kaaaa-meee-haaaa" wind-up
+  // plays while the button is held. If the user lets go quickly we cancel it.
+  stopHoldAudio();
+  holdAudio = playSound(BLAST_SOUND_SRC, false, 0.9);
+});
+
+document.addEventListener('mouseup', () => {
+  if (!active || blasting || flying || vanishing || !charging) return;
+  const heldFor = performance.now() - mouseDownAt;
+  charging = false;
+  if (heldFor < 180) {
+    // Quick tap. Kill the wind-up audio (it would clash with the short clip)
+    // and DEFER the beam so a second click can intercept and vanish.
+    stopHoldAudio();
+    cancelPendingFire();
+    pendingFireTimer = setTimeout(() => {
+      pendingFireTimer = null;
+      if (!active || vanishing || flying || blasting) return;
+      if (charge < 0.35) charge = 0.35;
+      fireBlast(false);
+    }, DOUBLE_CLICK_MS);
+  } else {
+    // Real hold → fire the FULL-SONG long beam immediately on release. The
+    // hold audio is already playing — fireBlast will adopt it instead of
+    // starting a fresh clip.
+    charge = 1;
+    fireBlast(true);
+  }
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') endScene();
+});
+
+function fireBlast(longMode) {
+  charging = false;
+  blasting = true;
+  blastStart = performance.now();
+  if (chargeSound) { try { chargeSound.pause(); } catch(e){} chargeSound = null; }
+  if (longMode && holdAudio) {
+    // Adopt the wind-up audio that's already playing. The vocal continues
+    // seamlessly into the beam.
+    blastSound = holdAudio;
+    holdAudio = null;
+  } else {
+    stopHoldAudio();
+    blastSound = playSound(BLAST_SOUND_SRC, false, 0.9);
+    // Short beam → clip the clip.
+    if (blastSound && !longMode) {
+      setTimeout(() => { try { blastSound.pause(); } catch(e){} }, 1000);
+    }
+  }
+  blastQuote = QUOTES[Math.floor(Math.random() * QUOTES.length)];
+  // Hand burst
+  for (let i = 0; i < 60; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const spd = 4 + Math.random() * 8;
+    particles.push({
+      x: anchorX + spriteH() * 0.15,
+      y: anchorY - spriteH() * 0.5,
+      vx: Math.cos(ang)*spd, vy: Math.sin(ang)*spd,
+      life: 1, col: Math.random() > 0.5 ? '#ffeb3b' : '#ffffff',
+      size: 3 + Math.random()*5,
+    });
+  }
+  // KAMEHAMEHA: one long horizontal laser from the hands rightward.
+  const ssj = ssjBlend > 0.5 || charge >= P.ssjAt;
+  // Long mode pins the beam to the full audio clip (~kamehameha.mp3 length).
+  // Fallback duration if the clip metadata isn't ready yet.
+  const duration = longMode ? 4200 : 900;
+  beam = {
+    start: performance.now(),
+    duration,
+    charge,
+    ssj,
+    long: !!longMode,
+  };
+  // For long mode let the audio's real duration drive the beam length so
+  // the envelope fade-out reaches zero exactly when the audio ends — no
+  // hard cuts.
+  if (longMode && blastSound) {
+    const syncDuration = () => {
+      if (blastSound && blastSound.duration && beam) {
+        beam.duration = blastSound.duration * 1000;
+      }
+    };
+    if (blastSound.readyState >= 1) syncDuration();
+    else blastSound.addEventListener('loadedmetadata', syncDuration, { once: true });
+  }
+  // Phrase is displayed via the Stop-hook stdout in the terminal — no
+  // notification or keystroke needed here.
+  const cleanupAt = duration;
+  setTimeout(() => {
+    // Use the (possibly updated) beam.duration so the cleanup fires at the
+    // real end of the beam, not the placeholder.
+    if (beam && performance.now() - beam.start < beam.duration) {
+      setTimeout(() => { blasting = false; beam = null; charge = 0; },
+        Math.max(0, beam.duration - (performance.now() - beam.start)));
+      return;
+    }
+    blasting = false; beam = null; charge = 0;
+  }, cleanupAt);
+}
+
+function instantTransmission() {
+  // Double click → instant transmission. Goku vanishes in a white flash.
+  charging = false;
+  blasting = false;
+  vanishing = true;
+  vanishStart = performance.now();
+  if (chargeSound) { try { chargeSound.pause(); } catch(e){} chargeSound = null; }
+  stopHoldAudio();
+  if (blastSound) { try { blastSound.pause(); } catch(e){} blastSound = null; }
+  playSound(VANISH_SOUND_SRC, false, 0.9);
+  // Implosion particle burst at his center.
+  const sh = spriteH();
+  for (let i = 0; i < 80; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const dist = sh * (0.4 + Math.random() * 0.5);
+    particles.push({
+      x: anchorX + Math.cos(ang) * dist,
+      y: anchorY - sh * 0.5 + Math.sin(ang) * dist,
+      vx: -Math.cos(ang) * (4 + Math.random() * 6),
+      vy: -Math.sin(ang) * (4 + Math.random() * 6),
+      life: 0.8,
+      col: Math.random() > 0.5 ? '#ffffff' : '#e0f0ff',
+      size: 3 + Math.random() * 4,
+    });
+  }
+  setTimeout(endScene, VANISH_MS + 40);
+}
+
+function endScene() {
+  active = false;
+  autoMode = false;
+  charging = false;
+  blasting = false;
+  flying = false;
+  flyEnding = false;
+  vanishing = false;
+  frameAlpha = [1, 0, 0];
+  charge = 0;
+  particles = [];
+  rings = [];
+  beam = null;
+  ssjBlend = 0;
+  gokuClicks = 0;
+  if (chargeSound) { try { chargeSound.pause(); } catch(e){} chargeSound = null; }
+  if (blastSound) { try { blastSound.pause(); } catch(e){} blastSound = null; }
+  stopHoldAudio();
+  cancelPendingFire();
+  window.bridge.hideOverlay();
+}
+
+// ── Helpers ─────────────────────────────────────────────────────────────────
+function spriteH() {
+  const img = spriteBase || null;
+  if (!img || !img.naturalHeight) return 400;
+  const minDim = Math.min(W, H);
+  return minDim * 0.55 * P.spriteScale;
+}
+
+// ── Update ──────────────────────────────────────────────────────────────────
+function update(dt) {
+  if (!active) return;
+
+  // Movement: follow cursor smoothly, or fly off screen.
+  if (flying) {
+    anchorX += flyVX;
+    anchorY += flyVY;
+    flyVX *= 1.02; // accelerate away
+    flyVY *= 1.01;
+    // Trail of ki particles behind him
+    for (let i = 0; i < 3; i++) {
+      particles.push({
+        x: anchorX + (Math.random() - 0.5) * 20,
+        y: anchorY - spriteH() * 0.3 + (Math.random() - 0.5) * 20,
+        vx: -flyVX * 0.15 + (Math.random() - 0.5) * 2,
+        vy: -flyVY * 0.15 + (Math.random() - 0.5) * 2,
+        life: 1,
+        col: charge >= P.ssjAt ? '#ffeb3b' : '#ffb300',
+        size: 4 + Math.random() * 4,
+      });
+    }
+  } else if (!autoMode) {
+    // Cursor chase — much slower while charging or firing so the hold pose
+    // doesn't jitter from tiny mouse movements.
+    const alpha = (charging || blasting) ? 0.12 : 0.62;
+    anchorX += (targetX - anchorX) * alpha;
+    anchorY += ((targetY + spriteH() * 0.5) - anchorY) * alpha;
+  }
+  // Smooth pose crossfade — every frame, push the active pose toward 1.0
+  // and the others toward 0.0. Reads as a soft blend rather than a snap.
+  const targetFrame = pickFrame();
+  for (let i = 0; i < 3; i++) {
+    const tgt = i === targetFrame ? 1 : 0;
+    frameAlpha[i] += (tgt - frameAlpha[i]) * 0.28;
+  }
+
+  // SSJ transformation disabled — Goku stays in base form.
+  ssjBlend = 0;
+
+  if (charging) {
+    charge = Math.min(1, (performance.now() - chargeStart) / P.chargeMs);
+  }
+
+  // Update rings
+  for (const r of rings) { r.r += 4 + charge * 6; r.age += dt; }
+  rings = rings.filter(r => r.r < Math.max(W, H));
+
+  // Update particles
+  for (const p of particles) {
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.96; p.vy *= 0.96;
+    p.life -= 0.018;
+  }
+  particles = particles.filter(p => p.life > 0);
+
+  // If Goku has flown off-screen during a fly-out, end the scene early.
+  if (flying) {
+    const h = spriteH();
+    if (anchorX < -h || anchorX > W + h || anchorY < -h) {
+      // Let the particle trail linger a moment, then drop the overlay.
+      if (!flyEnding) {
+        flyEnding = true;
+        setTimeout(endScene, 250);
+      }
+    }
+  }
+}
+
+// ── Draw ────────────────────────────────────────────────────────────────────
+function drawAura() {
+  const cx = anchorX;
+  const cy = anchorY - spriteH()/2;
+  // Aura only shows briefly during the beam fire — no charging glow.
+  if (!blasting) return;
+  const intensity = 0.25;
+  const pulse = 1 + Math.sin(performance.now() / 80) * 0.15 * intensity;
+  const glowR = (240 + intensity * 380) * pulse;
+  const grad = ctx.createRadialGradient(cx, cy, 10, cx, cy, glowR);
+  const col = charge > P.ssjAt || blasting ? '255,235,59' : '255,179,0';
+  grad.addColorStop(0, `rgba(${col},${Math.min(1, 0.65 * intensity + 0.1)})`);
+  grad.addColorStop(0.4, `rgba(${col},${0.28 * intensity + 0.03})`);
+  grad.addColorStop(1, `rgba(${col},0)`);
+  ctx.fillStyle = grad;
+  ctx.fillRect(cx - glowR, cy - glowR, glowR*2, glowR*2);
+
+  // Rings
+  ctx.strokeStyle = `rgba(${col},0.8)`;
+  ctx.lineWidth = 3;
+  for (const r of rings) {
+    const a = Math.max(0, 1 - r.r / 400);
+    ctx.strokeStyle = `rgba(${col},${a * 0.7})`;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r.r, 0, Math.PI*2);
+    ctx.stroke();
+  }
+}
+
+function pickFrame() {
+  if (beam) {
+    // Long beam: while waiting to arm, keep crossfading from cupped to thrust.
+    // After arming, hold the thrust pose for the body, then recoil at the end.
+    if (beam.long) {
+      if (!beam.armed) return 2;
+      const t = (performance.now() - beam.start) / beam.duration;
+      if (t < 0.92) return 2;
+      return 1;
+    }
+    // Short beam: quick cock-back → thrust → recoil.
+    const t = (performance.now() - beam.start) / beam.duration;
+    if (t < 0.08) return 1;
+    if (t < 0.85) return 2;
+    return 1;
+  }
+  if (charging) return 1;
+  return 0;
+}
+
+function drawSprite() {
+  if (!gokuFrames[0]) return;
+  // Vanish effect: fade out + slight shrink.
+  let vanishA = 1, vanishScale = 1;
+  if (vanishing) {
+    const vt = Math.min(1, (performance.now() - vanishStart) / VANISH_MS);
+    vanishA = 1 - vt;
+    vanishScale = 1 - vt * 0.25;
+  }
+  ctx.imageSmoothingEnabled = false;
+  // Idle breathing — slow chest squash & stretch, anchored at the feet.
+  const tNow = performance.now();
+  const breath = Math.sin(tNow / 900);
+  const stretchY = 1 + breath * 0.025;
+  const squashX  = 1 - breath * 0.018;
+  const breathBob = breath * 1.5;
+  // Each pose draws against its own crossfade alpha for a smooth swap.
+  for (let i = 0; i < 3; i++) {
+    const a = frameAlpha[i];
+    if (a < 0.01) continue;
+    const fr = gokuFrames[i];
+    if (!fr) continue;
+    const targetH = spriteH();
+    const srcH = fr.naturalHeight;
+    const scale = Math.max(1, Math.round(targetH / srcH));
+    const w = fr.naturalWidth * scale;
+    const h = srcH * scale;
+    const dw = Math.round(w * vanishScale * squashX);
+    const dh = Math.round(h * vanishScale * stretchY);
+    const x = Math.round(anchorX - dw / 2);
+    const y = Math.round(anchorY - dh + breathBob);
+    ctx.globalAlpha = a * vanishA;
+    ctx.drawImage(fr, x, y, dw, dh);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawVanishFlash() {
+  if (!vanishing) return;
+  const vt = Math.min(1, (performance.now() - vanishStart) / VANISH_MS);
+  // A bright instant-transmission flash — peaks early and fades.
+  const peak = 1 - Math.pow(vt * 2 - 1, 2); // quadratic peak at vt=0.5
+  const sh = spriteH();
+  const cx = anchorX;
+  const cy = anchorY - sh * 0.5;
+  const r = sh * (0.6 + vt * 2.2);
+  const g = ctx.createRadialGradient(cx, cy, 2, cx, cy, r);
+  g.addColorStop(0,   `rgba(255,255,255,${0.95 * peak})`);
+  g.addColorStop(0.4, `rgba(220,240,255,${0.55 * peak})`);
+  g.addColorStop(1,   'rgba(200,230,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+}
+
+// Procedural pixel arms that extend forward during the beam. Without a real
+// sprite sheet this is our stand-in for "Goku moves his hands": two chunky
+// orange gi-sleeves tipped with skin-tone fists, animated over the beam's
+// envelope so they cock back, thrust forward, hold, and recoil.
+function drawArms() {
+  if (!beam) return;
+  const t = (performance.now() - beam.start) / beam.duration;
+  if (t >= 1) return;
+  // Phase envelopes
+  // cock back: 0.0–0.1  (arms pull in)
+  // thrust:    0.1–0.22 (arms snap forward)
+  // hold:      0.22–0.8
+  // recoil:    0.8–1.0
+  let reach;
+  if (t < 0.1)       reach = -0.15 + (t / 0.1) * 0.05;       // pull to -0.1
+  else if (t < 0.22) reach = -0.1 + ((t - 0.1) / 0.12) * 1.1; // to +1.0
+  else if (t < 0.8)  reach = 1.0 + Math.sin((t - 0.22) * 20) * 0.03; // micro-tremor
+  else               reach = 1.0 * (1 - (t - 0.8) / 0.2);     // back to 0
+
+  const h = spriteH();
+  const armLen = h * 0.38 * Math.max(0, reach);
+  const px = Math.max(3, Math.round(h / 28));
+  const shoulderX = anchorX + h * 0.05;
+  const shoulderY = anchorY - h * 0.5;
+  // Arm: a few stacked horizontal pixel rects — top (upper arm) + bottom (forearm)
+  const sleeve = '#f28a2a';  // gi orange
+  const sleeveShade = '#c6691a';
+  const skin = '#ffcf9a';
+  const skinShade = '#d8a870';
+
+  const drawArm = (offY) => {
+    const y0 = shoulderY + offY;
+    // Upper sleeve (slightly thicker)
+    ctx.fillStyle = sleeveShade;
+    ctx.fillRect(shoulderX, y0 - px, Math.max(px, armLen * 0.55), px * 3 + 2);
+    ctx.fillStyle = sleeve;
+    ctx.fillRect(shoulderX, y0, Math.max(px, armLen * 0.55), px * 2);
+    // Forearm (skin)
+    const fx = shoulderX + armLen * 0.55;
+    const fLen = Math.max(px, armLen * 0.45);
+    ctx.fillStyle = skinShade;
+    ctx.fillRect(fx, y0 - px/2, fLen, px * 2 + 1);
+    ctx.fillStyle = skin;
+    ctx.fillRect(fx, y0, fLen, px);
+    // Fist
+    ctx.fillStyle = skinShade;
+    ctx.fillRect(fx + fLen, y0 - px, px * 2, px * 3);
+    ctx.fillStyle = skin;
+    ctx.fillRect(fx + fLen + px/2, y0 - px/2, px + 1, px * 2);
+  };
+  // Two stacked arms so it reads as both hands together kamehameha-style
+  drawArm(-px * 2);
+  drawArm(px * 1);
+}
+
+function drawBeam() {
+  if (!beam) return;
+  // Long beam: hold off rendering (and reset the envelope clock) until the
+  // arms-thrust pose has nearly finished crossfading in. Otherwise the beam
+  // appears while Goku's hands are still cupped at his hip.
+  if (beam.long && !beam.armed) {
+    if (frameAlpha[2] < 0.7) return;
+    beam.armed = true;
+    beam.start = performance.now();
+  }
+  const t = (performance.now() - beam.start) / beam.duration;
+  if (t >= 1) return;
+
+  // Smooth easing: ease-out at the start, ease-in at the end. The fade-out
+  // begins early (t > 0.55) so the beam is already softening by the time
+  // the audio's tail reaches it.
+  const easeOut = (x) => 1 - Math.pow(1 - x, 3);
+  const easeIn  = (x) => x * x * x;
+  let env;
+  if (t < 0.18) env = easeOut(t / 0.18);
+  else if (t > 0.55) env = 1 - easeIn((t - 0.55) / 0.45);
+  else env = 1;
+
+  const sh = spriteH();
+  const hx = anchorX + sh * 0.42;
+  const hy = anchorY - sh * 0.52;
+  const length = W - hx + 60;
+
+  const blueEdge = '80,160,255';
+  const blueMid  = '160,210,255';
+  const white    = '255,255,255';
+
+  // Very gentle breathing — small amplitude, slow period.
+  const breath = 0.98 + 0.02 * Math.sin(performance.now() / 220);
+
+  // Helper: draw a "tapered beam" — clipping path that starts at a point at
+  // (hx, hy) and ramps out to ±halfH over `taperLen` pixels, then continues
+  // at full thickness to (hx+length, hy ± halfH). Filled with a vertical
+  // linear gradient.
+  const drawTapered = (halfH, taperLen, gradient) => {
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(hx, hy);
+    ctx.lineTo(hx + taperLen, hy - halfH);
+    ctx.lineTo(hx + length,  hy - halfH);
+    ctx.lineTo(hx + length,  hy + halfH);
+    ctx.lineTo(hx + taperLen, hy + halfH);
+    ctx.closePath();
+    ctx.clip();
+    ctx.fillStyle = gradient;
+    ctx.fillRect(hx, hy - halfH, length, halfH * 2);
+    ctx.restore();
+  };
+
+  // OUTER FEATHER — wide soft halo, tapers in over ~70 px.
+  const featherH = (110 + 50 * env) * breath;
+  const gf = ctx.createLinearGradient(hx, hy - featherH, hx, hy + featherH);
+  gf.addColorStop(0.00, `rgba(${blueEdge},0)`);
+  gf.addColorStop(0.20, `rgba(${blueEdge},${0.10 * env})`);
+  gf.addColorStop(0.50, `rgba(${blueEdge},${0.25 * env})`);
+  gf.addColorStop(0.80, `rgba(${blueEdge},${0.10 * env})`);
+  gf.addColorStop(1.00, `rgba(${blueEdge},0)`);
+  drawTapered(featherH, 70, gf);
+
+  // OUTER GLOW — main blue body, tapers in over ~50 px.
+  const outerH = (72 + 38 * env) * breath;
+  const g = ctx.createLinearGradient(hx, hy - outerH, hx, hy + outerH);
+  g.addColorStop(0.00, `rgba(${blueEdge},0)`);
+  g.addColorStop(0.20, `rgba(${blueEdge},${0.35 * env})`);
+  g.addColorStop(0.40, `rgba(${blueEdge},${0.65 * env})`);
+  g.addColorStop(0.50, `rgba(${blueMid},${0.90 * env})`);
+  g.addColorStop(0.60, `rgba(${blueEdge},${0.65 * env})`);
+  g.addColorStop(0.80, `rgba(${blueEdge},${0.35 * env})`);
+  g.addColorStop(1.00, `rgba(${blueEdge},0)`);
+  drawTapered(outerH, 50, g);
+
+  // INNER WHITE-HOT CORE — tighter taper over ~32 px.
+  const coreH = (20 + 14 * env) * breath;
+  const g2 = ctx.createLinearGradient(hx, hy - coreH, hx, hy + coreH);
+  g2.addColorStop(0.00, `rgba(${blueMid},0)`);
+  g2.addColorStop(0.20, `rgba(${blueMid},${0.5 * env})`);
+  g2.addColorStop(0.45, `rgba(${white},${0.95 * env})`);
+  g2.addColorStop(0.55, `rgba(${white},${0.95 * env})`);
+  g2.addColorStop(0.80, `rgba(${blueMid},${0.5 * env})`);
+  g2.addColorStop(1.00, `rgba(${blueMid},0)`);
+  drawTapered(coreH, 32, g2);
+
+  // HAND FLARE — bright sphere at Goku's palms.
+  const flareR = (38 + env * 24) * breath;
+  const g3 = ctx.createRadialGradient(hx, hy, 2, hx, hy, flareR);
+  g3.addColorStop(0.00, `rgba(${white},${env})`);
+  g3.addColorStop(0.35, `rgba(${blueMid},${0.85 * env})`);
+  g3.addColorStop(0.70, `rgba(${blueEdge},${0.4 * env})`);
+  g3.addColorStop(1.00, `rgba(${blueEdge},0)`);
+  ctx.fillStyle = g3;
+  ctx.fillRect(hx - flareR, hy - flareR, flareR * 2, flareR * 2);
+
+  // LEADING TIP SHOCKWAVE
+  const tipX = hx + length;
+  const tipR = (54 + env * 30) * breath;
+  const g4 = ctx.createRadialGradient(tipX, hy, 4, tipX, hy, tipR);
+  g4.addColorStop(0.00, `rgba(${white},${env})`);
+  g4.addColorStop(0.35, `rgba(${blueMid},${0.7 * env})`);
+  g4.addColorStop(0.70, `rgba(${blueEdge},${0.35 * env})`);
+  g4.addColorStop(1.00, `rgba(${blueEdge},0)`);
+  ctx.fillStyle = g4;
+  ctx.fillRect(tipX - tipR, hy - tipR, tipR * 2, tipR * 2);
+}
+
+function drawParticles() {
+  for (const p of particles) {
+    ctx.globalAlpha = Math.max(0, p.life);
+    ctx.fillStyle = p.col;
+    ctx.fillRect(p.x - p.size/2, p.y - p.size/2, p.size, p.size);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawChargeBar() {
+  if (!charging) return;
+  const barW = 200, barH = 12;
+  const x = anchorX - barW/2;
+  const y = anchorY + 20;
+  ctx.fillStyle = 'rgba(0,0,0,0.6)';
+  ctx.fillRect(x-3, y-3, barW+6, barH+6);
+  ctx.fillStyle = '#222';
+  ctx.fillRect(x, y, barW, barH);
+  const col = charge >= P.ssjAt ? '#ffeb3b' : '#ff9800';
+  ctx.fillStyle = col;
+  ctx.fillRect(x, y, barW * charge, barH);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px -apple-system, system-ui';
+  ctx.textAlign = 'center';
+  ctx.fillText(charge >= P.ssjAt ? 'SUPER SAIYAN!' : 'CHARGING...', anchorX, y - 8);
+}
+
+function drawSpeechBubble() {
+  if (!blasting || !blastQuote) return;
+  const t = (performance.now() - blastStart) / P.blastHoldMs;
+  const alpha = t < 0.1 ? t/0.1 : (t > 0.85 ? (1-t)/0.15 : 1);
+  ctx.globalAlpha = Math.max(0, Math.min(1, alpha));
+
+  ctx.font = 'bold 28px -apple-system, system-ui, sans-serif';
+  ctx.textAlign = 'center';
+  const textW = ctx.measureText(blastQuote).width;
+  const padX = 24, padY = 16;
+  const bw = textW + padX*2, bh = 28 + padY*2;
+  let bx = anchorX - bw/2;
+  bx = Math.max(12, Math.min(W - bw - 12, bx));
+  const by = anchorY - spriteH() - bh - 18;
+  const cxBubble = bx + bw/2;
+
+  // Bubble
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#111';
+  ctx.lineWidth = 5;
+  const r = 18;
+  ctx.beginPath();
+  ctx.moveTo(bx+r, by);
+  ctx.arcTo(bx+bw, by, bx+bw, by+bh, r);
+  ctx.arcTo(bx+bw, by+bh, bx, by+bh, r);
+  ctx.arcTo(bx, by+bh, bx, by, r);
+  ctx.arcTo(bx, by, bx+bw, by, r);
+  ctx.closePath();
+  ctx.fill(); ctx.stroke();
+  // Tail — point down toward Goku's head
+  const tailX = Math.max(bx + 20, Math.min(bx + bw - 20, anchorX));
+  ctx.beginPath();
+  ctx.moveTo(tailX - 12, by+bh);
+  ctx.lineTo(tailX, by+bh+20);
+  ctx.lineTo(tailX + 12, by+bh);
+  ctx.closePath();
+  ctx.fillStyle = '#fff';
+  ctx.fill(); ctx.stroke();
+
+  ctx.fillStyle = '#111';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(blastQuote, cxBubble, by + bh/2);
+  ctx.textBaseline = 'alphabetic';
+  ctx.globalAlpha = 1;
+}
+
+function drawFlash() {
+  if (!blasting) return;
+  const t = (performance.now() - blastStart) / 300;
+  if (t >= 1) return;
+  ctx.fillStyle = `rgba(255,255,255,${(1-t)*0.85})`;
+  ctx.fillRect(0,0,W,H);
+}
+
+function draw() {
+  ctx.clearRect(0, 0, W, H);
+  if (!active) return;
+
+  // Screen shake
+  let sx = 0, sy = 0;
+  if (charging && charge > P.shakeAt) {
+    const s = (charge - P.shakeAt) / (1 - P.shakeAt) * P.shakeMax;
+    sx = (Math.random() - 0.5) * s;
+    sy = (Math.random() - 0.5) * s;
+  }
+  ctx.save();
+  ctx.translate(sx, sy);
+
+  drawAura();
+  drawBeam();
+  drawSprite();
+  drawVanishFlash();
+  drawParticles();
+
+  ctx.restore();
+
+  drawFlash();
+}
+
+// ── Main loop ───────────────────────────────────────────────────────────────
+let lastTime = performance.now();
+function loop() {
+  const now = performance.now();
+  const dt = now - lastTime;
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+loop();
+
+// ── IPC ─────────────────────────────────────────────────────────────────────
+window.bridge.onSpawnWhip(() => {
+  active = true;
+  charging = false;
+  blasting = false;
+  flying = false;
+  flyEnding = false;
+  charge = 0;
+  particles = [];
+  rings = [];
+  // Start at the center of the screen; he'll chase the cursor immediately.
+  targetX = anchorX = W / 2;
+  targetY = H / 2;
+  anchorY = H / 2 + spriteH() * 0.5;
+  window.bridge.setClickThrough(false);
+});
+
+window.bridge.onDropWhip(() => {
+  endScene();
+});
+
+// External trigger (e.g. Claude Code Stop hook) → spawn Goku on the left,
+// fire a short kamehameha, then instant-transmission out. Whole sequence
+// is self-contained: no user input required.
+function runAutoBlastSequence() {
+  // Hard reset of every state flag and queue.
+  active = true;
+  autoMode = true;
+  charging = false;
+  blasting = false;
+  flying = false;
+  flyEnding = false;
+  vanishing = false;
+  charge = 0.6;
+  ssjBlend = 0;
+  frameAlpha = [1, 0, 0];
+  particles = [];
+  rings = [];
+  beam = null;
+  gokuClicks = 0;
+  cancelPendingFire();
+  stopHoldAudio();
+
+  // Park Goku on the left side of the screen, mid-height.
+  const px = Math.max(180, Math.round(W * 0.18));
+  const py = Math.round(H * 0.5);
+  targetX = anchorX = px;
+  targetY = py;
+  anchorY = py + Math.round(spriteH() * 0.5);
+
+  window.bridge.setClickThrough(false);
+
+  // Stretched timeline so the whole show reads cleanly:
+  //   Phase 1: spawn breath (Goku appears, settles)
+  //   Phase 2: charge wind-up (cupped pose)
+  //   Phase 3: kamehameha beam fires
+  //   Phase 4: beat after the beam fades
+  //   Phase 5: instant transmission vanish
+  const SPAWN_DELAY = 350;
+  const CHARGE_HOLD = 450;
+  const BEAM_DURATION = 900;          // matches fireBlast(false)
+  const VANISH_LEAD_IN = 350;
+  setTimeout(() => {
+    if (!active) return;
+    charging = true;
+    chargeStart = performance.now();
+  }, SPAWN_DELAY);
+  setTimeout(() => {
+    if (!active) return;
+    charging = false;
+    fireBlast(false);
+  }, SPAWN_DELAY + CHARGE_HOLD);
+  setTimeout(() => {
+    if (!active || vanishing || flying) return;
+    beam = null;
+    blasting = false;
+    instantTransmission();
+  }, SPAWN_DELAY + CHARGE_HOLD + BEAM_DURATION + VANISH_LEAD_IN);
+}
+
+window.bridge.onAutoBlast(() => {
+  // Wait until the sprite sheet is loaded — otherwise drawSprite returns
+  // early and the whole show is invisible. Polls every 50ms for up to 2s.
+  let waited = 0;
+  const tryStart = () => {
+    if (gokuFrames[0]) { runAutoBlastSequence(); return; }
+    if (waited > 2000) { runAutoBlastSequence(); return; } // give up
+    waited += 50;
+    setTimeout(tryStart, 50);
+  };
+  tryStart();
+});
+</script>
+</body>
+</html>
