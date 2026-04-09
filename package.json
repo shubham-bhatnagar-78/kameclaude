@@ -20,12 +20,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/GitFrog1111/badclaude.git"
+    "url": "git+https://github.com/shubham-bhatnagar-78/kameclaude.git"
   },
   "bugs": {
-    "url": "https://github.com/GitFrog1111/badclaude/issues"
+    "url": "https://github.com/shubham-bhatnagar-78/kameclaude/issues"
   },
-  "homepage": "https://github.com/GitFrog1111/badclaude#readme",
+  "homepage": "https://github.com/shubham-bhatnagar-78/kameclaude#readme",
   "files": [
     "main.js",
     "preload.js",

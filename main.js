@@ -391,14 +391,8 @@ function sendMacroMac(text) {
 app.whenReady().then(async () => {
   tray = new Tray(await getTrayIcon());
   tray.setToolTip('KameClaude – Goku tells you when Claude Code is done');
-  tray.setContextMenu(
-    Menu.buildFromTemplate([
-      { label: 'Summon Goku', click: toggleOverlay },
-      { label: 'Fire kamehameha now', click: runAutoBlast },
-      { type: 'separator' },
-      { label: 'Quit', click: () => app.quit() },
-    ])
-  );
+  // Right-click → quit; left-click → summon Goku.
+  tray.setContextMenu(Menu.buildFromTemplate([{ label: 'Quit', click: () => app.quit() }]));
   tray.on('click', toggleOverlay);
 
   // Panic escape: always hide the overlay. The overlay window is

@@ -4,7 +4,7 @@
 
 A tiny menu-bar app that turns every Claude Code completion into a 4-second anime power-up. Impossible to miss. Annoying to your coworkers. Joyful to you.
 
-![KameClaude demo](assets/divider.png)
+![Goku firing a kamehameha](assets/kamehameha_ref.jpg)
 
 ## Install
 
@@ -14,9 +14,11 @@ kameclaude
 ```
 
 That's it. On first run, KameClaude:
-1. Installs a **Stop hook** into `~/.claude/settings.json` (a timestamped backup is saved next to it).
-2. Launches the menu-bar app.
-3. Every time Claude Code finishes, Goku materializes on your screen, charges a kamehameha, fires, and instant-transmissions away.
+1. Generates an auth token at `~/.kameclaude/token` (so only you can trigger Goku).
+2. Installs a token-authed **Stop hook** into `~/.claude/settings.json` (a timestamped backup is saved next to it).
+3. Launches the menu-bar app.
+
+Every time Claude Code finishes, Goku materializes on your screen, charges a kamehameha, fires, and instant-transmissions away.
 
 ## Commands
 
@@ -30,7 +32,10 @@ kameclaude --help          # show help
 
 ## How it works
 
-KameClaude runs a tiny HTTP trigger at `http://127.0.0.1:47832/blast`. The install step adds a `Stop` hook to `~/.claude/settings.json` that `curl`s this endpoint when Claude Code finishes:
+KameClaude runs a tiny local HTTP trigger at `http://127.0.0.1:47832/blast`. The install step:
+
+1. Generates a 48-char hex token at `~/.kameclaude/token` (mode `0600`) if one doesn't already exist.
+2. Adds a `Stop` hook to `~/.claude/settings.json` that `POST`s to the endpoint with a matching `X-KameClaude-Token` header when Claude Code finishes:
 
 ```json
 {
@@ -40,7 +45,7 @@ KameClaude runs a tiny HTTP trigger at `http://127.0.0.1:47832/blast`. The insta
         "hooks": [
           {
             "type": "command",
-            "command": "curl -s --max-time 1 http://127.0.0.1:47832/blast >/dev/null 2>&1 || true"
+            "command": "curl -s --max-time 1 -X POST -H \"X-KameClaude-Token: <your-token>\" http://127.0.0.1:47832/blast >/dev/null 2>&1 || true"
           }
         ]
       }
@@ -49,13 +54,11 @@ KameClaude runs a tiny HTTP trigger at `http://127.0.0.1:47832/blast`. The insta
 }
 ```
 
-Anything that can `curl` can trigger Goku — use it from other tools, scripts, shell aliases, whatever.
+The endpoint is loopback-only, requires `POST`, and rejects anything without a matching token — so random processes on your machine can't spam the overlay. Any tool that can read `~/.kameclaude/token` can fire Goku by `curl`ing with the header above.
 
-## Tray menu
+## Tray
 
-- **Summon Goku** — interactive mode. Follows your cursor; hold to charge, release to fire, double-click for instant transmission.
-- **Fire kamehameha now** — manual trigger.
-- **Quit**.
+Left-click the menu bar icon to summon Goku. Right-click for **Quit**. No other menu.
 
 ## Interactive controls
 
@@ -73,8 +76,8 @@ Anything that can `curl` can trigger Goku — use it from other tools, scripts, 
 ## Develop
 
 ```bash
-git clone https://github.com/GitFrog1111/badclaude
-cd badclaude
+git clone https://github.com/shubham-bhatnagar-78/kameclaude
+cd kameclaude
 npm install
 npm start
 ```
