@@ -34,7 +34,8 @@
     "sounds",
     "icon",
     "bin/kameclaude.js",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "start": "electron .",
